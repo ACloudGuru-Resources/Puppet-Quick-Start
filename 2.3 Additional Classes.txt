@@ -1,0 +1,111 @@
+
+We want to pad out our `nginx` module by providing two additional classes: the `service` class and the `config` class.
+
+### config.pp
+
+Pull down the `deb-nginx.conf` and `rh-nginx.conf` files. We want to store these in the `files` directory of our nginx module.
+
+    curl https://raw.githubusercontent.com/linuxacademy/\
+    content-puppetqs-nginx/master/files/deb-nginx.conf -o deb-nginx.conf
+    
+    curl https://raw.githubusercontent.com/linuxacademy/\
+    content-puppetqs-nginx/master/files/rh-nginx.conf -o rh-nginx.conf
+
+Drop back down to the `nginx` module directory, then create the `config` class:
+
+    pdk new class config
+
+Open the newly-created file and update the document string:
+
+    # $EDITOR manifests/config.pp
+
+    # Manages the nginx.conf file
+    #
+    # @summary Manages the nginx.conf file
+    #
+    # @example
+    #   include nginx::config
+
+We then want to use the `file` resource type to manage where our files go. We're working on testing this against just our Red Hat-based CentOS 7 server right now, so we'll focus on the `rh-nginx.conf` file.
+
+When referencing files in our class, we want to use the Puppet URI. Instead of inputting the full path, we can use the `puppet:///` shorthand to reference our `/etc/puppetlabs/code/environments/production` directory; it also knows to pull from the `files` directly for static files, and the directory itself should not be referenced in the path:
+
+    class nginx::config {
+      file { 'nginx_config':
+        path   => '/etc/nginx/nginx.conf',
+        source => 'puppet:///modules/nginx/rh-nginx.conf',
+        ensure => 'present',
+      }
+    }
+
+Save and exit the file.
+
+### service.pp
+
+Finally, we want to provide a class that allows us to both make sure our `nginx` daemon is started and enabled, as well as able to restart when any changes are made to our configuration file from our `config` class:
+
+    pdk new class service
+
+Update the Puppet docstring:
+
+    # Manage the state of the nginx daemon
+    #
+    # @summary Manage the state of the nginx daemon
+    #
+    # @example
+    #   include nginx::service
+
+Add the `service` class:
+
+    class nginx::service {
+      service { 'nginx_service':
+        name       => 'nginx',
+        ensure     => 'running',
+        enable     => true,
+        hasrestart => true,
+      }
+    }
+
+We also want to use this service to trigger a restart when our `config` file changes, hence the use of the `hasrestart` attribute.
+
+Save and exit the `service.pp` file.
+
+Let's also update our `config` class to trigger this restart with the `notify` metaparameter:
+
+    # $EDITOR manifests/config.pp
+
+    class nginx::config {
+      file { 'nginx_config':
+        path   => '/etc/nginx/nginx.conf',
+        source => 'puppet:///modules/nginx/rh-nginx.conf',
+        ensure => 'present',
+        notify => Service['nginx_service'],
+      }
+    }
+
+Notice how, when referencing our `service` class, we use a `Service` with a capital `S`. This differentiates it from the `service` resource type.
+
+Save and exit.
+
+### init.pp
+Now we want to update our `init.pp` to `contain` the two new classes we created. We also want to make sure they are run in the correct order. We do this by using the `Class` reference (notice the capital `C`; this works the same as `Service` and is referencing the name of a class, not the `class` function itself) and "chaining" the existing classes together to define the order in which they are run. These are called "chaining arrows," with the `->` being an ordering arrow where the resource to the "right" of the arrow is always run after the left, and `~>` being a notifying arrow, which only runs the resource to the right of the arrow should the left-resource provoke a change.
+
+    class nginx {
+      contain nginx::install
+      contain nginx::config
+      contain nginx::service
+
+      Class['nginx::install']
+      -> Class['nginx::config']
+      ~> Class['nginx::service']
+    }
+
+Save and exit.
+
+Run the parser against the new and updated files:
+
+    puppet parser validate init.pp service.pp config.pp
+
+On the CentOS 7 agent node, perform a Puppet run:
+
+    puppet agent -t
